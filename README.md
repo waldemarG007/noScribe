@@ -184,6 +184,27 @@ The source code of the editor can be found here: [https://github.com/kaixxx/noSc
 - If you change anything in the language files, make sure to follow the conventions of the YAML language.
 - If you want to change the language of the user interface, you have to change the value of the "locale" setting in the advanced settings (see above).
 
+## Telegram Bot
+This project can also be run as a Telegram bot for transcribing YouTube videos. The bot is deployed using Docker.
+
+### Running the Bot (Server)
+To run the Telegram bot on your server, you need to have Docker installed. Then, follow these steps:
+
+1.  **Build the Docker image:**
+    Open a terminal in the project's root directory and run the following command. This will build the Docker image from `Dockerfile.bot` and tag it as `noscribe-bot`.
+    ```bash
+    docker build -f Dockerfile.bot -t noscribe-bot .
+    ```
+
+2.  **Run the Docker container:**
+    You will need a bot token from the BotFather on Telegram. Once you have your token, run the command below, making sure to replace `"YOUR_TELEGRAM_BOT_TOKEN"` with your actual token.
+    ```bash
+    docker run -d --name noscribe-bot-container -e TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN" noscribe-bot
+    ```
+    This command runs the bot in the background (`-d`). You can check its logs at any time by running `docker logs noscribe-bot-container`.
+
+Once the container is running, you can interact with your bot on Telegram. Send it a YouTube link, and it will process the video and send you the transcript as a `.txt` file.
+
 ## Other Software
 If you are interested in open source software for the analysis of qualitative data, take a look at [QualCoder](https://github.com/ccbogel/QualCoder) and [Taguette](https://www.taguette.org/).
 
