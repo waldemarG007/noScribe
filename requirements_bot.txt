@@ -1,0 +1,16 @@
+# Requirements for the noScribe Telegram Bot
+
+# Core dependencies from noScribe
+AdvancedHTMLParser
+appdirs
+faster-whisper
+Pillow
+pyannote.audio>=3.3.2
+python-i18n
+PyYAML
+torch
+# Note: ctranslate2 is a dependency of faster-whisper and will be installed with it.
+
+# Dependencies for the bot
+python-telegram-bot[ext]
+yt-dlp

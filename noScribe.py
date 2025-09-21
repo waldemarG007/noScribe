@@ -67,8 +67,9 @@ import urllib
 import multiprocessing
 import gc
 import traceback
+from transcriber import run_transcription, get_whisper_models as get_transcriber_whisper_models
 
- # Pyinstaller fix, used to open multiple instances on Mac
+# Pyinstaller fix, used to open multiple instances on Mac
 multiprocessing.freeze_support()
 
 logging.basicConfig()
@@ -699,23 +700,8 @@ class App(ctk.CTk):
     # Events and Methods
 
     def get_whisper_models(self):
-        self.whisper_model_paths = {}
-        
-        def collect_models(dir):        
-            for entry in os.listdir(dir):
-                entry_path = os.path.join(dir, entry)
-                if os.path.isdir(entry_path):
-                    if entry in self.whisper_model_paths:
-                        self.logn(f'Ignored double name for whisper model: "{entry}"', 'error')
-                    else:
-                        self.whisper_model_paths[entry]=entry_path 
-       
-        # collect system models:
-        collect_models(os.path.join(app_dir, 'models'))
-        
-        # collect user defined models:        
-        collect_models(self.user_models_dir)
-
+        # This now uses the refactored function from transcriber.py
+        self.whisper_model_paths = get_transcriber_whisper_models()
         return list(self.whisper_model_paths.keys())
     
     def on_whisper_model_selected(self, value):
@@ -909,26 +895,14 @@ class App(ctk.CTk):
         # This is the main function where all the magic happens
         # We put this in a seperate thread so that it does not block the main ui
 
-        proc_start_time = datetime.datetime.now()
         self.cancel = False
 
         # Show the stop button
         self.start_button.pack_forget() # hide
         self.stop_button.pack(padx=[20, 0], pady=[20,30], expand=False, fill='x', anchor='sw')
-        
-        # Show the progress bar
-        # self.progress_bar.set(0)
-        # self.progress_bar.pack(padx=[10,10], pady=[10,10], expand=True, fill='x', anchor='sw', side='left')
-        # self.progress_bar.pack(padx=[0,10], pady=[10,25], expand=True, fill='x', anchor='sw', side='left')
-        # self.progress_bar.pack(padx=20, pady=[10,20], expand=True, fill='both')
-
-        tmpdir = TemporaryDirectory('noScribe')
-        self.tmp_audio_file = os.path.join(tmpdir.name, 'tmp_audio.wav')
 
         try:
             # collect all the options
-            option_info = ''
-
             if self.audio_file == '':
                 self.logn(t('err_no_audio_file'), 'error')
                 tk.messagebox.showerror(title='noScribe', message=t('err_no_audio_file'))
@@ -939,711 +913,48 @@ class App(ctk.CTk):
                 tk.messagebox.showerror(title='noScribe', message=t('err_no_transcript_file'))
                 return
 
-            self.my_transcript_file = self.transcript_file
-            self.file_ext = os.path.splitext(self.my_transcript_file)[1][1:]
-
-            # create log file
-            if not os.path.exists(f'{config_dir}/log'):
-                os.makedirs(f'{config_dir}/log')
-            self.log_file = open(f'{config_dir}/log/{Path(self.my_transcript_file).stem}.log', 'w', encoding="utf-8")
-
-            # options for faster-whisper
-            self.whisper_beam_size = get_config('whisper_beam_size', 1)
-            self.logn(f'whisper beam size: {self.whisper_beam_size}', where='file')
-
-            self.whisper_temperature = get_config('whisper_temperature', 0.0)
-            self.logn(f'whisper temperature: {self.whisper_temperature}', where='file')
-
-            self.whisper_compute_type = get_config('whisper_compute_type', 'default')
-            self.logn(f'whisper compute type: {self.whisper_compute_type}', where='file')
-
-            self.timestamp_interval = get_config('timestamp_interval', 60_000) # default: add a timestamp every minute
-            self.logn(f'timestamp_interval: {self.timestamp_interval}', where='file')
-
-            self.timestamp_color = get_config('timestamp_color', '#78909C') # default: light gray/blue
-            self.logn(f'timestamp_color: {self.timestamp_color}', where='file')
-
-            # get UI settings
-            val = self.entry_start.get()
-            if val == '':
-                self.start = 0
-            else:
-                self.start = millisec(val)
-                option_info += f'{t("label_start")} {val} | ' 
-
-            val = self.entry_stop.get()
-            if val == '':
-                self.stop = '0'
-            else:
-                self.stop = millisec(val)
-                option_info += f'{t("label_stop")} {val} | '          
-            
+            start_time = self.entry_start.get()
+            stop_time = self.entry_stop.get()
             sel_whisper_model = self.option_menu_whisper_model.get()
-            if sel_whisper_model in self.whisper_model_paths.keys():
-                self.whisper_model = self.whisper_model_paths[sel_whisper_model]
-            else:                
-                raise FileNotFoundError(f"The whisper model '{sel_whisper_model}' does not exist.")
+            language_name = self.option_menu_language.get()
+            speaker_detection = self.option_menu_speaker.get()
+            overlapping = self.check_box_overlapping.get()
+            timestamps = self.check_box_timestamps.get()
+            disfluencies = self.check_box_disfluencies.get()
+            pause_option = self.option_menu_pause.get()
 
-            option_info += f'{t("label_whisper_model")} {sel_whisper_model} | '
-
-            self.language_name = self.option_menu_language.get()
-            option_info += f'{t("label_language")} {self.language_name} ({languages[self.language_name]}) | '
-
-            self.speaker_detection = self.option_menu_speaker.get()
-            option_info += f'{t("label_speaker")} {self.speaker_detection} | '
-
-            self.overlapping = self.check_box_overlapping.get()
-            option_info += f'{t("label_overlapping")} {self.overlapping} | '
-
-            self.timestamps = self.check_box_timestamps.get()
-            option_info += f'{t("label_timestamps")} {self.timestamps} | '
-            
-            self.disfluencies = self.check_box_disfluencies.get()
-            option_info += f'{t("label_disfluencies")} {self.disfluencies} | '
-
-            self.pause = self.option_menu_pause._values.index(self.option_menu_pause.get())
-            option_info += f'{t("label_pause")} {self.pause}'
-
-            self.pause_marker = get_config('pause_seconds_marker', '.') # Default to . if marker not in config
-
-            # Default to True if auto save not in config or invalid value
-            self.auto_save = False if get_config('auto_save', 'True') == 'False' else True 
-            
-            # Open the finished transript in the editor automatically?
-            self.auto_edit_transcript = get_config('auto_edit_transcript', 'True')
-            
-            # Check for invalid vtt options
-            if self.file_ext == 'vtt' and (self.pause > 0 or self.overlapping or self.timestamps):
-                self.logn()
-                self.logn(t('err_vtt_invalid_options'), 'error')
-                self.pause = 0
-                self.overlapping = False
-                self.timestamps = False           
-
-            if platform.system() == "Darwin": # = MAC
-                # if (platform.mac_ver()[0] >= '12.3' and
-                #     # torch.backends.mps.is_built() and # not necessary since depends on packaged PyTorch
-                #     torch.backends.mps.is_available()):
-                # Default to mps on 12.3 and newer, else cpu
-                xpu = get_config('pyannote_xpu', 'mps' if platform.mac_ver()[0] >= '12.3' else 'cpu')
-                self.pyannote_xpu = 'mps' if xpu == 'mps' else 'cpu'
-            elif platform.system() in ('Windows', 'Linux'):
-                # Use cuda if available and not set otherwise in config.yml, fallback to cpu: 
-                cuda_available = torch.cuda.is_available() and get_cuda_device_count() > 0
-                xpu = get_config('pyannote_xpu', 'cuda' if cuda_available else 'cpu')
-                self.pyannote_xpu = 'cuda' if xpu == 'cuda' else 'cpu'
-                whisper_xpu = get_config('whisper_xpu', 'cuda' if cuda_available else 'cpu')
-                self.whisper_xpu = 'cuda' if whisper_xpu == 'cuda' else 'cpu'
-            else:
-                raise Exception('Platform not supported yet.')
-
-            # log CPU capabilities
-            self.logn("=== CPU FEATURES ===", where="file")
-            if platform.system() == 'Windows':
-                self.logn("System: Windows", where="file")
-                for key, value in cpufeature.CPUFeature.items():
-                    self.logn('    {:24}: {}'.format(key, value), where="file")
-            elif platform.system() == "Darwin": # = MAC
-                self.logn(f"System: MAC {platform.machine()}", where="file")
-                if platform.mac_ver()[0] >= '12.3': # MPS needs macOS 12.3+
-                    if config['pyannote_xpu'] == 'mps':
-                        self.logn("macOS version >= 12.3:\nUsing MPS (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
-                    elif config['pyannote_xpu'] == 'cpu':
-                        self.logn("macOS version >= 12.3:\nUser selected to use CPU (results will be better, but you might wanna make yourself a coffee)", where="file")
-                    else:
-                        self.logn("macOS version >= 12.3:\nInvalid option for 'pyannote_xpu' in config.yml (should be 'mps' or 'cpu')\nYou might wanna change this\nUsing MPS anyway (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
-                else:
-                    self.logn("macOS version < 12.3:\nMPS not available: Using CPU\nPerformance might be poor\nConsider updating macOS, if possible", where="file")
-
-            try:
-
-                #-------------------------------------------------------
-                # 1) Convert Audio
-
-                try:
-                    self.logn()
-                    self.logn(t('start_audio_conversion'), 'highlight')
+            def log_callback(message, level='info'):
+                tags = []
+                if level == 'error':
+                    tags.append('error')
+                elif level == 'highlight':
+                    tags.append('highlight')
                 
-                    if int(self.stop) > 0: # transcribe only part of the audio
-                        end_pos_cmd = f'-to {self.stop}ms'
-                    else: # tranbscribe until the end
-                        end_pos_cmd = ''
+                # Ensure we are running in the main thread for UI updates
+                self.after(0, self.logn, message, tags)
+
+
+            run_transcription(
+                audio_file=self.audio_file,
+                transcript_file=self.transcript_file,
+                language_name=language_name,
+                whisper_model_name=sel_whisper_model,
+                speaker_detection=speaker_detection,
+                start_time=start_time,
+                stop_time=stop_time,
+                overlapping=overlapping,
+                timestamps=timestamps,
+                disfluencies=disfluencies,
+                pause_option=pause_option,
+                log_callback=log_callback
+            )
+
+            # auto open transcript in editor
+            auto_edit_transcript = get_config('auto_edit_transcript', 'True')
+            file_ext = os.path.splitext(self.transcript_file)[1][1:]
+            if (auto_edit_transcript == 'True') and (file_ext == 'html'):
+                self.launch_editor(self.transcript_file)
 
-                    arguments = f' -loglevel warning -hwaccel auto -y -ss {self.start}ms {end_pos_cmd} -i \"{self.audio_file}\" -ar 16000 -ac 1 -c:a pcm_s16le "{self.tmp_audio_file}"'
-                    if platform.system() == 'Windows':
-                        ffmpeg_path = os.path.join(app_dir, 'ffmpeg.exe')
-                        ffmpeg_cmd = ffmpeg_path + arguments
-                    elif platform.system() == "Darwin":  # = MAC
-                        ffmpeg_path = os.path.join(app_dir, 'ffmpeg')
-                        ffmpeg_cmd = shlex.split(ffmpeg_path + arguments)
-                    elif platform.system() == "Linux":
-                        # TODO: Use system ffmpeg if available
-                        ffmpeg_path = os.path.join(app_dir, 'ffmpeg-linux-x86_64')
-                        ffmpeg_cmd = shlex.split(ffmpeg_path + arguments)
-                    else:
-                        raise Exception('Platform not supported yet.')
-
-                    self.logn(ffmpeg_cmd, where='file')
-
-                    if platform.system() == 'Windows':
-                        # (supresses the terminal, see: https://stackoverflow.com/questions/1813872/running-a-process-in-pythonw-with-popen-without-a-console)
-                        startupinfo = STARTUPINFO()
-                        startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-                        with Popen(ffmpeg_cmd, stdout=PIPE, stderr=STDOUT, bufsize=1,universal_newlines=True,encoding='utf-8', startupinfo=startupinfo) as ffmpeg_proc:
-                            for line in ffmpeg_proc.stdout:
-                                self.logn('ffmpeg: ' + line)
-                    elif platform.system() in ("Darwin", "Linux"):
-                        with Popen(ffmpeg_cmd, stdout=PIPE, stderr=STDOUT, bufsize=1,universal_newlines=True,encoding='utf-8') as ffmpeg_proc:
-                            for line in ffmpeg_proc.stdout:
-                                self.logn('ffmpeg: ' + line)
-                    if ffmpeg_proc.returncode > 0:
-                        raise Exception(t('err_ffmpeg'))
-                    self.logn(t('audio_conversion_finished'))
-                    self.set_progress(1, 50)
-                except Exception as e:
-                    self.logn(t('err_converting_audio'), 'error')
-                    traceback_str = traceback.format_exc()
-                    self.logn(e, 'error', tb=traceback_str)
-                    return
-
-                #-------------------------------------------------------
-                # 2) Speaker identification (diarization) with pyannote
-
-                # Helper Functions:
-
-                def overlap_len(ss_start, ss_end, ts_start, ts_end):
-                    # ss...: speaker segment start and end in milliseconds (from pyannote)
-                    # ts...: transcript segment start and end (from whisper.cpp)
-                    # returns overlap percentage, i.e., "0.8" = 80% of the transcript segment overlaps with the speaker segment from pyannote  
-                    if ts_end < ss_start: # no overlap, ts is before ss
-                        return None
-
-                    if ts_start > ss_end: # no overlap, ts is after ss
-                        return 0.0
-
-                    ts_len = ts_end - ts_start
-                    if ts_len <= 0:
-                        return None
-
-                    # ss & ts have overlap
-                    overlap_start = max(ss_start, ts_start) # Whichever starts later
-                    overlap_end = min(ss_end, ts_end) # Whichever ends sooner
-
-                    ol_len = overlap_end - overlap_start + 1
-                    return ol_len / ts_len
-
-                def find_speaker(diarization, transcript_start, transcript_end) -> str:
-                    # Looks for the shortest segment in diarization that has at least 80% overlap 
-                    # with transcript_start - trancript_end.  
-                    # Returns the speaker name if found.
-                    # If only an overlap < 80% is found, this speaker name ist returned.
-                    # If no overlap is found, an empty string is returned.
-                    spkr = ''
-                    overlap_found = 0
-                    overlap_threshold = 0.8
-                    segment_len = 0
-                    is_overlapping = False
-
-                    for segment in diarization:
-                        t = overlap_len(segment["start"], segment["end"], transcript_start, transcript_end)
-                        if t is None: # we are already after transcript_end
-                            break
-
-                        current_segment_len = segment["end"] - segment["start"] # Length of the current segment
-                        current_segment_spkr = f'S{segment["label"][8:]}' # shorten the label: "SPEAKER_01" > "S01"
-
-                        if overlap_found >= overlap_threshold: # we already found a fitting segment, compare length now
-                            if (t >= overlap_threshold) and (current_segment_len < segment_len): # found a shorter (= better fitting) segment that also overlaps well
-                                is_overlapping = True
-                                overlap_found = t
-                                segment_len = current_segment_len
-                                spkr = current_segment_spkr
-                        elif t > overlap_found: # no segment with good overlap yet, take this if the overlap is better then previously found 
-                            overlap_found = t
-                            segment_len = current_segment_len
-                            spkr = current_segment_spkr
-                        
-                    if self.overlapping and is_overlapping:
-                        return f"//{spkr}"
-                    else:
-                        return spkr
-
-                # Start Diarization:
-
-                if self.speaker_detection != 'none':
-                    try:
-                        self.logn()
-                        self.logn(t('start_identifiying_speakers'), 'highlight')
-                        self.logn(t('loading_pyannote'))
-                        self.set_progress(1, 100)
-
-                        diarize_output = os.path.join(tmpdir.name, 'diarize_out.yaml')
-                        diarize_abspath = 'python ' + os.path.join(app_dir, 'diarize.py')
-                        diarize_abspath_win = os.path.join(app_dir, '..', 'diarize.exe')
-                        diarize_abspath_mac = os.path.join(app_dir, '..', 'MacOS', 'diarize')
-                        diarize_abspath_lin = os.path.join(app_dir, '..', 'diarize')
-                        if platform.system() == 'Windows' and os.path.exists(diarize_abspath_win):
-                            diarize_abspath = diarize_abspath_win
-                        elif platform.system() == 'Darwin' and os.path.exists(diarize_abspath_mac): # = MAC
-                            diarize_abspath = diarize_abspath_mac
-                        elif platform.system() == 'Linux' and os.path.exists(diarize_abspath_lin):
-                            diarize_abspath = diarize_abspath_lin
-                        diarize_cmd = f'{diarize_abspath} {self.pyannote_xpu} "{self.tmp_audio_file}" "{diarize_output}" {self.speaker_detection}'
-                        diarize_env = None
-                        if self.pyannote_xpu == 'mps':
-                            diarize_env = os.environ.copy()
-                            diarize_env["PYTORCH_ENABLE_MPS_FALLBACK"] = str(1) # Necessary since some operators are not implemented for MPS yet.
-                        self.logn(diarize_cmd, where='file')
-
-                        if platform.system() == 'Windows':
-                            # (supresses the terminal, see: https://stackoverflow.com/questions/1813872/running-a-process-in-pythonw-with-popen-without-a-console)
-                            startupinfo = STARTUPINFO()
-                            startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-                        elif platform.system() in ('Darwin', "Linux"): # = MAC
-                            diarize_cmd = shlex.split(diarize_cmd)
-                            startupinfo = None
-                        else:
-                            raise Exception('Platform not supported yet.')
-
-                        with Popen(diarize_cmd,
-                                   stdout=PIPE,
-                                   stderr=STDOUT,
-                                   encoding='UTF-8',
-                                   startupinfo=startupinfo,
-                                   env=diarize_env,
-                                   close_fds=True) as pyannote_proc:
-                            for line in pyannote_proc.stdout:
-                                if self.cancel:
-                                    pyannote_proc.kill()
-                                    raise Exception(t('err_user_cancelation')) 
-                                print(line)
-                                if line.startswith('progress '):
-                                    progress = line.split()
-                                    step_name = progress[1]
-                                    progress_percent = int(progress[2])
-                                    self.logr(f'{step_name}: {progress_percent}%')                       
-                                    if step_name == 'segmentation':
-                                        self.set_progress(2, progress_percent * 0.3)
-                                    elif step_name == 'embeddings':
-                                        self.set_progress(2, 30 + (progress_percent * 0.7))
-                                elif line.startswith('error '):
-                                    self.logn('PyAnnote error: ' + line[5:], 'error')
-                                elif line.startswith('log: '):
-                                    self.logn('PyAnnote ' + line, where='file')
-                                    if line.strip() == "log: 'pyannote_xpu: cpu' was set.": # The string needs to be the same as in diarize.py `print("log: 'pyannote_xpu: cpu' was set.")`.
-                                        self.pyannote_xpu = 'cpu'
-                                        config['pyannote_xpu'] = 'cpu'
-
-                        if pyannote_proc.returncode > 0:
-                            raise Exception('')
-
-                        # load diarization results
-                        with open(diarize_output, 'r') as file:
-                            diarization = yaml.safe_load(file)
-
-                        # write segments to log file 
-                        for segment in diarization:
-                            line = f'{ms_to_str(self.start + segment["start"], include_ms=True)} - {ms_to_str(self.start + segment["end"], include_ms=True)} {segment["label"]}'
-                            self.logn(line, where='file')
-
-                        self.logn()
-
-                    except Exception as e:
-                        self.logn(t('err_identifying_speakers'), 'error')
-                        traceback_str = traceback.format_exc()
-                        self.logn(e, 'error', tb=traceback_str)
-                        return
-
-                #-------------------------------------------------------
-                # 3) Transcribe with faster-whisper
-
-                self.logn()
-                self.logn(t('start_transcription'), 'highlight')
-                self.logn(t('loading_whisper'))
-
-                # prepare transcript html
-                d = AdvancedHTMLParser.AdvancedHTMLParser()
-                d.parseStr(default_html)                
-
-                # add audio file path:
-                tag = d.createElement("meta")
-                tag.name = "audio_source"
-                tag.content = self.audio_file
-                d.head.appendChild(tag)
-
-                # add app version:
-                """ # removed because not really necessary
-                tag = d.createElement("meta")
-                tag.name = "noScribe_version"
-                tag.content = app_version
-                d.head.appendChild(tag)
-                """
-
-                #add WordSection1 (for line numbers in MS Word) as main_body
-                main_body = d.createElement('div')
-                main_body.addClass('WordSection1')
-                d.body.appendChild(main_body)
-
-                # header               
-                p = d.createElement('p')
-                p.setStyle('font-weight', '600')
-                p.appendText(Path(self.audio_file).stem) # use the name of the audio file (without extension) as the title
-                main_body.appendChild(p)
-
-                # subheader
-                p = d.createElement('p')
-                s = d.createElement('span')
-                s.setStyle('color', '#909090')
-                s.setStyle('font-size', '0.8em')
-                s.appendText(t('doc_header', version=app_version))
-                br = d.createElement('br')
-                s.appendChild(br)
-
-                s.appendText(t('doc_header_audio', file=self.audio_file))
-                br = d.createElement('br')
-                s.appendChild(br)
-
-                s.appendText(f'({html.escape(option_info)})')
-
-                p.appendChild(s)
-                main_body.appendChild(p)
-
-                p = d.createElement('p')
-                main_body.appendChild(p)
-
-                speaker = ''
-                prev_speaker = ''
-                self.last_auto_save = datetime.datetime.now()
-
-                def save_doc():
-                    txt = ''
-                    if self.file_ext == 'html':
-                        txt = d.asHTML()
-                    elif self.file_ext == 'txt':
-                        txt = html_to_text(d)
-                    elif self.file_ext == 'vtt':
-                        txt = html_to_webvtt(d, self.audio_file)
-                    else:
-                        raise TypeError(f'Invalid file type "{self.file_ext}".')
-                    try:
-                        if txt != '':
-                            with open(self.my_transcript_file, 'w', encoding="utf-8") as f:
-                                f.write(txt)
-                                f.flush()
-                            self.last_auto_save = datetime.datetime.now()
-                    except Exception as e:
-                        # other error while saving, maybe the file is already open in Word and cannot be overwritten
-                        # try saving to a different filename
-                        transcript_path = Path(self.my_transcript_file)
-                        self.my_transcript_file = f'{transcript_path.parent}/{transcript_path.stem}_1{self.file_ext}'
-                        if os.path.exists(self.my_transcript_file):
-                            # the alternative filename also exists already, don't want to overwrite, giving up
-                            raise Exception(t('rescue_saving_failed'))
-                        else:
-                            # htmlStr = d.asHTML()
-                            with open(self.my_transcript_file, 'w', encoding="utf-8") as f:
-                                f.write(txt)
-                                f.flush()
-                            self.logn()
-                            self.logn(t('rescue_saving', file=self.my_transcript_file), 'error', link=f'file://{self.my_transcript_file}')
-                            self.last_auto_save = datetime.datetime.now()
-
-                try:
-                    from faster_whisper import WhisperModel
-                    if platform.system() == "Darwin": # = MAC
-                        whisper_device = 'auto'
-                    elif platform.system() in ('Windows', 'Linux'):
-                        whisper_device = 'cpu'
-                        whisper_device = self.whisper_xpu
-                    else:
-                        raise Exception('Platform not supported yet.')
-                    model = WhisperModel(self.whisper_model,
-                                         device=whisper_device,  
-                                         cpu_threads=number_threads, 
-                                         compute_type=self.whisper_compute_type, 
-                                         local_files_only=True)
-                    self.logn('model loaded', where='file')
-
-                    if self.cancel:
-                        raise Exception(t('err_user_cancelation')) 
-
-                    multilingual = False
-                    if self.language_name == 'Multilingual':
-                        multilingual = True
-                        whisper_lang = None
-                    elif self.language_name == 'Auto':
-                        whisper_lang = None
-                    else:
-                        whisper_lang = languages[self.language_name]
-                    
-                    # VAD 
-                     
-                    try:
-                        self.vad_threshold = float(config['voice_activity_detection_threshold'])
-                    except:
-                        config['voice_activity_detection_threshold'] = '0.5'
-                        self.vad_threshold = 0.5                     
-
-                    sampling_rate = model.feature_extractor.sampling_rate
-                    audio = decode_audio(self.tmp_audio_file, sampling_rate=sampling_rate)
-                    duration = audio.shape[0] / sampling_rate
-                    
-                    self.logn('Voice Activity Detection')
-                    try:
-                        vad_parameters = VadOptions(min_silence_duration_ms=1000, 
-                                                threshold=self.vad_threshold,
-                                                speech_pad_ms=0)
-                    except TypeError:
-                        # parameter threshold was temporarily renamed to 'onset' in pyannote 3.1:  
-                        vad_parameters = VadOptions(min_silence_duration_ms=1000, 
-                                                onset=self.vad_threshold,
-                                                speech_pad_ms=0)
-                    speech_chunks = get_speech_timestamps(audio, vad_parameters)
-                    
-                    def adjust_for_pause(segment):
-                        """Adjusts start and end of segment if it falls into a pause 
-                        identified by the VAD"""
-                        pause_extend = 0.2  # extend the pauses by 200ms to make the detection more robust
-                        
-                        # iterate through the pauses and adjust segment boundaries accordingly
-                        for i in range(0, len(speech_chunks)):
-                            pause_start = (speech_chunks[i]['end'] / sampling_rate) - pause_extend
-                            if i == (len(speech_chunks) - 1): 
-                                pause_end = duration + pause_extend # last segment, pause till the end
-                            else:
-                                pause_end = (speech_chunks[i+1]['start']  / sampling_rate) + pause_extend
-                            
-                            if pause_start > segment.end:
-                                break  # we moved beyond the segment, stop going further
-                            if segment.start > pause_start and segment.start < pause_end:
-                                segment.start = pause_end - pause_extend
-                            if segment.end > pause_start and segment.end < pause_end:
-                                segment.end = pause_start + pause_extend
-                        
-                        return segment
-                    
-                    # transcribe
-                    
-                    if self.cancel:
-                        raise Exception(t('err_user_cancelation')) 
-
-                    vad_parameters.speech_pad_ms = 400
-
-                    # detect language                    
-                    if self.language_name == 'auto':
-                        language, language_probability, all_language_probs = model.detect_language(
-                            audio,
-                            vad_filter=True,
-                            vad_parameters=vad_parameters
-                        )
-                        self.language = language
-                        self.logn("Detected language '%s' with probability %f" % (language, language_probability))
-
-                    if self.disfluencies:                    
-                        try:
-                            with open(os.path.join(app_dir, 'prompt.yml'), 'r', encoding='utf-8') as file:
-                                prompts = yaml.safe_load(file)
-                        except:
-                            prompts = {}
-                        self.prompt = prompts.get(languages[self.language_name], '') # Fetch language prompt, default to empty string
-                    else:
-                        self.prompt = ''
-                    
-                    del audio
-                    gc.collect()
-                    
-                    segments, info = model.transcribe(
-                        self.tmp_audio_file, # audio, 
-                        language=whisper_lang,
-                        multilingual=multilingual, 
-                        beam_size=5, 
-                        #temperature=self.whisper_temperature, 
-                        word_timestamps=True, 
-                        #initial_prompt=self.prompt,
-                        hotwords=self.prompt, 
-                        vad_filter=True,
-                        vad_parameters=vad_parameters,
-                        # length_penalty=0.5
-                    )
-
-                    if self.cancel:
-                        raise Exception(t('err_user_cancelation')) 
-
-                    self.logn(t('start_transcription'))
-                    self.logn()
-
-                    last_segment_end = 0
-                    last_timestamp_ms = 0
-                    first_segment = True
-
-                    for segment in segments:
-                        # check for user cancelation
-                        if self.cancel:
-                            if self.auto_save:
-                                save_doc()
-                                self.logn()
-                                self.log(t('transcription_saved'))
-                                self.logn(self.my_transcript_file, link=f'file://{self.my_transcript_file}')
-
-                            raise Exception(t('err_user_cancelation')) 
-
-                        segment = adjust_for_pause(segment)
-
-                        # get time of the segment in milliseconds
-                        start = round(segment.start * 1000.0)
-                        end = round(segment.end * 1000.0)
-                        # if we skipped a part at the beginning of the audio we have to add this here again, otherwise the timestaps will not match the original audio:
-                        orig_audio_start = self.start + start
-                        orig_audio_end = self.start + end
-
-                        if self.timestamps:
-                            ts = ms_to_str(orig_audio_start)
-                            ts = f'[{ts}]'
-
-                        # check for pauses and mark them in the transcript
-                        if (self.pause > 0) and (start - last_segment_end >= self.pause * 1000): # (more than x seconds with no speech)
-                            pause_len = round((start - last_segment_end)/1000)
-                            if pause_len >= 60: # longer than 60 seconds
-                                pause_str = ' ' + t('pause_minutes', minutes=round(pause_len/60))
-                            elif pause_len >= 10: # longer than 10 seconds
-                                pause_str = ' ' + t('pause_seconds', seconds=pause_len)
-                            else: # less than 10 seconds
-                                pause_str = ' (' + (self.pause_marker * pause_len) + ')'
-
-                            if first_segment:
-                                pause_str = pause_str.lstrip() + ' '
-
-                            orig_audio_start_pause = self.start + last_segment_end
-                            orig_audio_end_pause = self.start + start
-                            a = d.createElement('a')
-                            a.name = f'ts_{orig_audio_start_pause}_{orig_audio_end_pause}_{speaker}'
-                            a.appendText(pause_str)
-                            p.appendChild(a)
-                            self.log(pause_str)
-                            if first_segment:
-                                self.logn()
-                                self.logn()
-                        last_segment_end = end
-
-                        # write text to the doc
-                        # diarization (speaker detection)?
-                        seg_text = segment.text
-                        seg_html = html.escape(seg_text)
-
-                        if self.speaker_detection != 'none':
-                            new_speaker = find_speaker(diarization, start, end)
-                            if (speaker != new_speaker) and (new_speaker != ''): # speaker change
-                                if new_speaker[:2] == '//': # is overlapping speech, create no new paragraph
-                                    prev_speaker = speaker
-                                    speaker = new_speaker
-                                    seg_text = f' {speaker}:{seg_text}'
-                                    seg_html = html.escape(seg_text)                                
-                                elif (speaker[:2] == '//') and (new_speaker == prev_speaker): # was overlapping speech and we are returning to the previous speaker 
-                                    speaker = new_speaker
-                                    seg_text = f'//{seg_text}'
-                                    seg_html = html.escape(seg_text)
-                                else: # new speaker, not overlapping
-                                    if speaker[:2] == '//': # was overlapping speech, mark the end
-                                        last_elem = p.lastElementChild
-                                        if last_elem:
-                                            last_elem.appendText('//')
-                                        else:
-                                            p.appendText('//')
-                                        self.log('//')
-                                    p = d.createElement('p')
-                                    main_body.appendChild(p)
-                                    if not first_segment:
-                                        self.logn()
-                                        self.logn()
-                                    speaker = new_speaker
-                                    # add timestamp
-                                    if self.timestamps:
-                                        seg_html = f'{speaker}: <span style="color: {self.timestamp_color}" >{ts}</span>{html.escape(seg_text)}'
-                                        seg_text = f'{speaker}: {ts}{seg_text}'
-                                        last_timestamp_ms = start
-                                    else:
-                                        if self.file_ext != 'vtt': # in vtt files, speaker names are added as special voice tags so skip this here
-                                            seg_text = f'{speaker}:{seg_text}'
-                                            seg_html = html.escape(seg_text)
-                                        else:
-                                            seg_html = html.escape(seg_text).lstrip()
-                                            seg_text = f'{speaker}:{seg_text}'
-                                        
-                            else: # same speaker
-                                if self.timestamps:
-                                    if (start - last_timestamp_ms) > self.timestamp_interval:
-                                        seg_html = f' <span style="color: {self.timestamp_color}" >{ts}</span>{html.escape(seg_text)}'
-                                        seg_text = f' {ts}{seg_text}'
-                                        last_timestamp_ms = start
-                                    else:
-                                        seg_html = html.escape(seg_text)
-
-                        else: # no speaker detection
-                            if self.timestamps and (first_segment or (start - last_timestamp_ms) > self.timestamp_interval):
-                                seg_html = f' <span style="color: {self.timestamp_color}" >{ts}</span>{html.escape(seg_text)}'
-                                seg_text = f' {ts}{seg_text}'
-                                last_timestamp_ms = start
-                            else:
-                                seg_html = html.escape(seg_text)
-                            # avoid leading whitespace in first paragraph
-                            if first_segment:
-                                seg_text = seg_text.lstrip()
-                                seg_html = seg_html.lstrip()
-
-                        # Mark confidence level (not implemented yet in html)
-                        # cl_level = round((segment.avg_logprob + 1) * 10)
-                        # TODO: better cl_level for words based on https://github.com/Softcatala/whisper-ctranslate2/blob/main/src/whisper_ctranslate2/transcribe.py
-                        # if cl_level > 0:
-                        #     r.style = d.styles[f'noScribe_cl{cl_level}']
-
-                        # Create bookmark with audio timestamps start to end and add the current segment.
-                        # This way, we can jump to the according audio position and play it later in the editor.
-                        a_html = f'<a name="ts_{orig_audio_start}_{orig_audio_end}_{speaker}" >{seg_html}</a>'
-                        a = d.createElementFromHTML(a_html)
-                        p.appendChild(a)
-
-                        self.log(seg_text)
-
-                        first_segment = False
-
-                        # auto save
-                        if self.auto_save:
-                            if (datetime.datetime.now() - self.last_auto_save).total_seconds() > 20:
-                                save_doc()
-
-                        progr = round((segment.end/info.duration) * 100)
-                        self.set_progress(3, progr)
-
-                    save_doc()
-                    self.logn()
-                    self.logn()
-                    self.logn(t('transcription_finished'), 'highlight')
-                    if self.transcript_file != self.my_transcript_file: # used alternative filename because saving under the initial name failed
-                        self.log(t('rescue_saving'))
-                        self.logn(self.my_transcript_file, link=f'file://{self.my_transcript_file}')
-                    else:
-                        self.log(t('transcription_saved'))
-                        self.logn(self.my_transcript_file, link=f'file://{self.my_transcript_file}')
-                    # log duration of the whole process
-                    proc_time = datetime.datetime.now() - proc_start_time
-                    proc_seconds = "{:02d}".format(int(proc_time.total_seconds() % 60))
-                    proc_time_str = f'{int(proc_time.total_seconds() // 60)}:{proc_seconds}' 
-                    self.logn(t('trancription_time', duration=proc_time_str)) 
-
-                    # auto open transcript in editor
-                    if (self.auto_edit_transcript == 'True') and (self.file_ext == 'html'):
-                        self.launch_editor(self.my_transcript_file)
-                
-                except Exception as e:
-                    self.logn()
-                    self.logn(t('err_transcription'), 'error')
-                    traceback_str = traceback.format_exc()
-                    self.logn(e, 'error', tb=traceback_str)
-                    return
-
-            finally:
-                self.log_file.close()
-                self.log_file = None
 
         except Exception as e:
             self.logn(t('err_options'), 'error')

@@ -1,0 +1,34 @@
+# Dockerfile for the noScribe Telegram Bot
+
+# Use a slim Python base image
+FROM python:3.9-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies
+# - ffmpeg is required for audio processing by yt-dlp and noScribe
+# - git and git-lfs are needed for pyannote.audio to pull models
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    git-lfs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy the requirements file and install Python dependencies
+COPY requirements_bot.txt .
+RUN pip install --no-cache-dir -r requirements_bot.txt
+
+# Copy the application files and models
+COPY transcriber.py .
+COPY telegram_bot.py .
+COPY diarize.py .
+COPY prompt.yml .
+COPY pyannote ./pyannote
+COPY models ./models
+COPY trans ./trans
+
+# Set the entrypoint to run the bot
+# The user must provide the TELEGRAM_BOT_TOKEN as an environment variable
+# e.g., docker run -e TELEGRAM_BOT_TOKEN="your-token" noscribe-bot
+CMD ["python", "telegram_bot.py"]
