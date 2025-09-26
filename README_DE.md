@@ -203,5 +203,19 @@ Um den Telegram-Bot auf Ihrem Server zu betreiben, muss Docker installiert sein.
 
 Sobald der Container läuft, können Sie mit Ihrem Bot auf Telegram interagieren. Senden Sie ihm einen YouTube-Link, und er wird das Video verarbeiten und Ihnen das Transkript als `.txt`-Datei zurücksenden.
 
+### Bereitstellung mit Portainer
+Wenn Sie Portainer auf Ihrem Proxmox-Server verwenden, können Sie den Bot einfach mit der bereitgestellten `docker-compose.yml`-Datei bereitstellen.
+
+1.  **Gehen Sie in Portainer zu "Stacks".**
+2.  **Klicken Sie auf "Add stack".**
+3.  **Geben Sie dem Stack einen Namen** (z.B. `noscribe-bot`).
+4.  **Wählen Sie "Git Repository"** als Build-Methode.
+5.  **Geben Sie die URL dieses Repositorys an** und spezifizieren Sie den Branch.
+6.  **Setzen Sie den Compose-Pfad** auf `docker-compose.yml`.
+7.  **Fügen Sie unter "Environment variables"** eine Variable für Ihren Telegram-Bot-Token hinzu:
+    - **Name:** `TELEGRAM_BOT_TOKEN`
+    - **Wert:** `ihr-telegram-bot-token-hier-einfügen`
+8.  **Klicken Sie auf "Deploy the stack".** Portainer wird nun das Repository abrufen, das Docker-Image erstellen und den Container bereitstellen.
+
 ## Andere Software
 Wenn Sie an Open-Source-Software für die Analyse qualitativer Daten interessiert sind, schauen Sie sich [QualCoder](https://github.com/ccbogel/QualCoder) und [Taguette](https://www.taguette.org/) an.

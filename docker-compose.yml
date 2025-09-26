@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  noscribe-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    image: noscribe-bot:latest
+    container_name: noscribe-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    volumes:
+      # Mount a volume for the config directory to persist models and settings
+      # This is optional but recommended to avoid re-downloading models on container recreation.
+      - noscribe_config:/root/.config/noScribe
+
+volumes:
+  noscribe_config:

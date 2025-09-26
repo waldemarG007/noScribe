@@ -3,15 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <title>noScribe README</title>
-<style>
-  body { font-family: sans-serif; line-height: 1.6; max-width: 800px; margin: 20px auto; padding: 0 10px; }
-  h1, h2, h3 { color: #333; }
-  code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
-  pre { background-color: #f4f4f4; padding: 10px; border-radius: 4px; overflow-x: auto; }
-  a { color: #0366d6; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  img { max-width: 100%; height: auto; }
-</style>
 </head>
 <body>
 <h1>noScribe</h1>
@@ -217,6 +208,22 @@ for f in config.json model.bin preprocessor_config.json tokenizer.json vocabular
 </li>
 </ol>
 <p>Sobald der Container läuft, können Sie mit Ihrem Bot auf Telegram interagieren. Senden Sie ihm einen YouTube-Link, und er wird das Video verarbeiten und Ihnen das Transkript als <code>.txt</code>-Datei zurücksenden.</p>
+<h3>Bereitstellung mit Portainer</h3>
+<p>Wenn Sie Portainer auf Ihrem Proxmox-Server verwenden, können Sie den Bot einfach mit der bereitgestellten <code>docker-compose.yml</code>-Datei bereitstellen.</p>
+<ol>
+<li><strong>Gehen Sie in Portainer zu "Stacks".</strong></li>
+<li><strong>Klicken Sie auf "Add stack".</strong></li>
+<li><strong>Geben Sie dem Stack einen Namen</strong> (z.B. <code>noscribe-bot</code>).</li>
+<li><strong>Wählen Sie "Git Repository"</strong> als Build-Methode.</li>
+<li><strong>Geben Sie die URL dieses Repositorys an</strong> und spezifizieren Sie den Branch.</li>
+<li><strong>Setzen Sie den Compose-Pfad</strong> auf <code>docker-compose.yml</code>.</li>
+<li><strong>Fügen Sie unter "Environment variables"</strong> eine Variable für Ihren Telegram-Bot-Token hinzu:<ul>
+<li><strong>Name:</strong> <code>TELEGRAM_BOT_TOKEN</code></li>
+<li><strong>Wert:</strong> <code>ihr-telegram-bot-token-hier-einfügen</code></li>
+</ul>
+</li>
+<li><strong>Klicken Sie auf "Deploy the stack".</strong> Portainer wird nun das Repository abrufen, das Docker-Image erstellen und den Container bereitstellen.</li>
+</ol>
 <h2>Andere Software</h2>
 <p>Wenn Sie an Open-Source-Software für die Analyse qualitativer Daten interessiert sind, schauen Sie sich <a href="https://github.com/ccbogel/QualCoder">QualCoder</a> und <a href="https://www.taguette.org/">Taguette</a> an.</p>
 </body>
