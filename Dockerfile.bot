@@ -19,14 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements_bot.txt .
 RUN pip install --no-cache-dir -r requirements_bot.txt
 
-# Copy the application files and models
+# Copy the application files
 COPY transcriber.py .
 COPY telegram_bot.py .
 COPY diarize.py .
 COPY prompt.yml .
-COPY pyannote ./pyannote
-COPY models ./models
-COPY trans ./trans
+COPY model_manager.py .
 
 # Set the entrypoint to run the bot
 # The user must provide the TELEGRAM_BOT_TOKEN as an environment variable

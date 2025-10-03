@@ -33,62 +33,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="Please send me a valid YouTube link."
         )
 
+import tempfile
+
 async def transcribe_video(update: Update, context: ContextTypes.DEFAULT_TYPE, video_url: str):
     """Downloads, transcribes, and sends the video transcript."""
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id=chat_id, text="Request received. Starting process...")
 
-    try:
-        # 1. Download Audio using yt-dlp
-        await context.bot.send_message(chat_id=chat_id, text="Downloading audio from the video...")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        try:
+            # 1. Download Audio using yt-dlp
+            await context.bot.send_message(chat_id=chat_id, text="Downloading audio from the video...")
 
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': 'downloads/%(id)s.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        }
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            }
 
-        # Create directories if they don't exist
-        os.makedirs("downloads", exist_ok=True)
-        os.makedirs("transcripts", exist_ok=True)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+                # The postprocessor is configured to output an mp3 file.
+                # We construct the final path by taking the base name of the downloaded file
+                # and changing the extension to .mp3.
+                base_filepath = os.path.splitext(info['requested_downloads'][0]['filepath'])[0]
+                downloaded_file_path = base_filepath + '.mp3'
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            video_id = info.get('id', 'video')
-            downloaded_file_path = f"downloads/{video_id}.mp3"
-            transcript_file_path = f"transcripts/{video_id}.txt"
+            transcript_file_path = os.path.join(temp_dir, f"{info.get('id', 'transcript')}.txt")
 
+            await context.bot.send_message(chat_id=chat_id, text="Download complete. Starting transcription...")
 
-        await context.bot.send_message(chat_id=chat_id, text="Download complete. Starting transcription...")
+            # 2. Transcribe using the refactored transcriber
+            def log_to_telegram(message, level='info'):
+                logger.info(f"Transcription log: {message}")
 
-        # 2. Transcribe using the refactored transcriber
-        def log_to_telegram(message, level='info'):
-            # This function can be used to send progress updates, but for now, we'll just log it.
-            logger.info(f"Transcription log: {message}")
+            # Use default parameters for the bot, consistent with a server environment
+            run_transcription(
+                audio_file=downloaded_file_path,
+                transcript_file=transcript_file_path,
+                language_name='Auto',
+                whisper_model_name='precise',
+                whisper_beam_size=5,
+                whisper_temperature=0.0,
+                whisper_compute_type='default',
+                speaker_detection='auto',
+                log_callback=log_to_telegram
+            )
 
-        # For the bot, we'll use a default set of parameters.
-        run_transcription(
-            audio_file=downloaded_file_path,
-            transcript_file=transcript_file_path,
-            language_name='Auto',
-            whisper_model_name='precise', # or 'fast'
-            speaker_detection='auto',
-            log_callback=log_to_telegram
-        )
+            await context.bot.send_message(chat_id=chat_id, text="Transcription complete. Sending you the file...")
 
-        await context.bot.send_message(chat_id=chat_id, text="Transcription complete. Sending you the file...")
+            # 3. Send the transcript file back to the user
+            with open(transcript_file_path, 'rb') as document:
+                await context.bot.send_document(chat_id=chat_id, document=document, filename=f"{info.get('title', 'transcript')}.txt")
 
-        # 3. Send the transcript file back to the user
-        with open(transcript_file_path, 'rb') as document:
-            await context.bot.send_document(chat_id=chat_id, document=document)
-
-        # 4. Clean up files
-        os.remove(downloaded_file_path)
-        os.remove(transcript_file_path)
+            # The temporary directory and its contents are automatically cleaned up
 
     except Exception as e:
         logger.error(f"An error occurred: {e}", exc_info=True)

@@ -170,21 +170,27 @@ def html_to_webvtt(parser: AdvancedHTMLParser.AdvancedHTMLParser, media_path: st
                 vtt += f'{i+1}\n{start} --> {end}\n<v {spkr}>{txt.lstrip()}\n\n'
     return vtt
 
+from model_manager import ensure_whisper_model, MODELS_DIR
+
 def get_whisper_models():
+    """
+    Ensures the default whisper models ('precise', 'fast') are downloaded via the
+    model_manager and returns a dictionary of all available model paths.
+    """
+    # Ensure default models are present
+    ensure_whisper_model("precise")
+    ensure_whisper_model("fast")
+
     whisper_model_paths = {}
-    user_models_dir = os.path.join(config_dir, 'whisper_models')
-    def collect_models(dir):
-        if not os.path.isdir(dir):
-            return
-        for entry in os.listdir(dir):
-            entry_path = os.path.join(dir, entry)
-            if os.path.isdir(entry_path):
-                if entry in whisper_model_paths:
-                    print(f'Ignored double name for whisper model: "{entry}"')
-                else:
-                    whisper_model_paths[entry]=entry_path
-    collect_models(os.path.join(app_dir, 'models'))
-    collect_models(user_models_dir)
+
+    # Collect all model paths from the central models directory
+    if os.path.isdir(MODELS_DIR):
+        for entry in os.listdir(MODELS_DIR):
+            entry_path = os.path.join(MODELS_DIR, entry)
+            # A simple check for a valid model directory
+            if os.path.isdir(entry_path) and os.path.exists(os.path.join(entry_path, 'config.json')):
+                whisper_model_paths[entry] = entry_path
+
     return whisper_model_paths
 
 
@@ -194,6 +200,9 @@ def run_transcription(
     transcript_file: str,
     language_name: str,
     whisper_model_name: str,
+    whisper_beam_size: int,
+    whisper_temperature: float,
+    whisper_compute_type: str,
     speaker_detection: str,
     start_time: str = '00:00:00',
     stop_time: str = '',
@@ -203,6 +212,13 @@ def run_transcription(
     pause_option: str = '1sec+',
     log_callback=print
 ):
+    # Wrapper for the log_callback to handle the new dictionary format
+    def log(message, type="log", tags=[], link=""):
+        log_callback({"type": type, "data": {"message": message, "tags": tags, "link": link}})
+
+    def log_progress(step, value):
+        log_callback({"type": "progress", "data": {"step": step, "value": value}})
+
     proc_start_time = datetime.datetime.now()
     tmpdir = TemporaryDirectory(prefix='noScribe-')
     tmp_audio_file = os.path.join(tmpdir.name, 'tmp_audio.wav')
@@ -217,9 +233,6 @@ def run_transcription(
         file_ext = os.path.splitext(my_transcript_file)[1][1:]
 
         # options
-        whisper_beam_size = get_config('whisper_beam_size', 1)
-        whisper_temperature = get_config('whisper_temperature', 0.0)
-        whisper_compute_type = get_config('whisper_compute_type', 'default')
         timestamp_interval = get_config('timestamp_interval', 60_000)
         timestamp_color = get_config('timestamp_color', '#78909C')
 
@@ -236,7 +249,7 @@ def run_transcription(
         pause_marker = get_config('pause_seconds_marker', '.')
 
         if file_ext == 'vtt' and (pause > 0 or overlapping or timestamps):
-            log_callback("VTT output does not support pause, overlapping, or timestamp options. Disabling them.")
+            log("VTT output does not support pause, overlapping, or timestamp options. Disabling them.")
             pause = 0
             overlapping = False
             timestamps = False
@@ -250,7 +263,7 @@ def run_transcription(
 
 
         # 1) Convert Audio
-        log_callback("Starting audio conversion...")
+        log("Starting audio conversion...", type="log", tags=["highlight"])
         end_pos_cmd = f'-to {stop_time}' if stop > 0 else ''
         arguments = f' -loglevel warning -hwaccel auto -y -ss {start_time} {end_pos_cmd} -i "{audio_file}" -ar 16000 -ac 1 -c:a pcm_s16le "{tmp_audio_file}"'
 
@@ -284,15 +297,16 @@ def run_transcription(
 
         with Popen(ffmpeg_cmd, stdout=PIPE, stderr=STDOUT, bufsize=1, universal_newlines=True, encoding='utf-8', startupinfo=startupinfo) as ffmpeg_proc:
             for line in ffmpeg_proc.stdout:
-                log_callback(f'ffmpeg: {line.strip()}')
+                log(f'ffmpeg: {line.strip()}')
         if ffmpeg_proc.returncode != 0:
             raise Exception(f'ffmpeg conversion failed with code {ffmpeg_proc.returncode}.')
-        log_callback("Audio conversion finished.")
+        log("Audio conversion finished.")
+        log_progress(1, 50) # Mark progress
 
         # 2) Speaker identification
         diarization = []
         if speaker_detection != 'none':
-            log_callback("Starting speaker identification...")
+            log("Starting speaker identification...", type="log", tags=["highlight"])
             diarize_output = os.path.join(tmpdir.name, 'diarize_out.yaml')
 
             python_executable = sys.executable or "python"
@@ -306,14 +320,24 @@ def run_transcription(
 
             with Popen(diarize_cmd, stdout=PIPE, stderr=STDOUT, encoding='UTF-8', startupinfo=startupinfo, env=diarize_env) as pyannote_proc:
                 for line in pyannote_proc.stdout:
-                    log_callback(f'diarize: {line.strip()}')
+                    if line.startswith('progress '):
+                        progress = line.split()
+                        step_name = progress[1]
+                        progress_percent = int(progress[2])
+                        log(f'{step_name}: {progress_percent}%', type="logr")
+                        if step_name == 'segmentation':
+                            log_progress(2, progress_percent * 0.3)
+                        elif step_name == 'embeddings':
+                            log_progress(2, 30 + (progress_percent * 0.7))
+                    else:
+                        log(f'diarize: {line.strip()}')
 
             if pyannote_proc.returncode != 0:
                 raise Exception(f"Speaker diarization failed with code {pyannote_proc.returncode}.")
 
             with open(diarize_output, 'r') as file:
                 diarization = yaml.safe_load(file)
-            log_callback("Speaker identification finished.")
+            log("Speaker identification finished.")
 
         # Helper for diarization
         def find_speaker(diarization_data, transcript_start, transcript_end):
@@ -328,30 +352,29 @@ def run_transcription(
             return spkr
 
         # 3) Transcribe with faster-whisper
-        log_callback("Starting transcription...")
+        log("Starting transcription...", type="log", tags=["highlight"])
         from faster_whisper import WhisperModel
 
         model = WhisperModel(whisper_model, device=whisper_xpu, cpu_threads=number_threads, compute_type=whisper_compute_type, local_files_only=True)
 
         whisper_lang = languages.get(language_name)
+        audio_to_transcribe = tmp_audio_file # Default to file path
 
         vad_threshold = float(get_config('voice_activity_detection_threshold', '0.5'))
         vad_parameters = VadOptions(min_silence_duration_ms=1000, threshold=vad_threshold, speech_pad_ms=400)
 
         if language_name == 'Auto':
-            # Need to decode audio for language detection
+            # Decode audio once for language detection
             sampling_rate = model.feature_extractor.sampling_rate
-            audio = decode_audio(tmp_audio_file, sampling_rate=sampling_rate)
-            lang_info = model.detect_language(audio, vad_filter=True, vad_parameters=vad_parameters)
+            decoded_audio = decode_audio(tmp_audio_file, sampling_rate=sampling_rate)
+            lang_info, _ = model.detect_language(decoded_audio) # Using the decoded audio
             if lang_info and lang_info[0]:
                  whisper_lang = lang_info[0][0]
-                 log_callback(f"Detected language: {whisper_lang} with probability {lang_info[0][1]}")
+                 log(f"Detected language: {whisper_lang} with probability {lang_info[0][1]}")
             else:
                  whisper_lang = "en" # Default to english if detection fails
-                 log_callback("Language detection failed, defaulting to English.")
-            del audio
-            gc.collect()
-
+                 log("Language detection failed, defaulting to English.")
+            audio_to_transcribe = decoded_audio # Use the decoded audio for transcription
 
         prompt = ""
         if disfluencies:
@@ -360,11 +383,17 @@ def run_transcription(
                     prompts = yaml.safe_load(file)
                 prompt = prompts.get(whisper_lang, '')
             except FileNotFoundError:
-                log_callback("prompt.yml not found, continuing without prompt.")
+                log("prompt.yml not found, continuing without prompt.")
 
         segments, info = model.transcribe(
-            tmp_audio_file, language=whisper_lang, beam_size=5, word_timestamps=True,
-            hotwords=prompt, vad_filter=True, vad_parameters=vad_parameters
+            audio_to_transcribe,
+            language=whisper_lang,
+            beam_size=whisper_beam_size,
+            temperature=whisper_temperature,
+            word_timestamps=True,
+            hotwords=prompt,
+            vad_filter=True,
+            vad_parameters=vad_parameters
         )
 
         # Prepare output document
@@ -390,8 +419,7 @@ def run_transcription(
         main_body.appendChild(p)
 
         speaker = ''
-        log_callback("Processing segments...")
-        full_text = ""
+        log("Processing segments...")
         for segment in segments:
             start_ms = round(segment.start * 1000.0)
             end_ms = round(segment.end * 1000.0)
@@ -411,15 +439,17 @@ def run_transcription(
                         speaker_prefix = f'{speaker}:'
                         seg_text = f'{speaker_prefix}{seg_text}'
                         seg_html = f'{html.escape(speaker_prefix)}{seg_html}'
-                        full_text += f"\n\n{speaker_prefix}"
 
             # Append segment text
             a_html = f'<a name="ts_{orig_audio_start}_{orig_audio_end}_{speaker}" >{seg_html}</a>'
             a = d.createElementFromHTML(a_html)
             p.appendChild(a)
-            full_text += seg_text
 
-        log_callback("\nTranscription finished.")
+            # Update progress
+            progr = round((segment.end / info.duration) * 100)
+            log_progress(3, progr)
+
+        log("\nTranscription finished.", type="log", tags=["highlight"])
 
         # Save final output
         output_content = ""
@@ -434,13 +464,13 @@ def run_transcription(
             f.write(output_content)
 
         proc_time = datetime.datetime.now() - proc_start_time
-        log_callback(f'Transcription time: {proc_time}')
+        log(f'Transcription time: {proc_time}')
         return my_transcript_file
 
     except Exception as e:
         traceback_str = traceback.format_exc()
-        log_callback(f"An error occurred: {e}\n{traceback_str}")
+        log(f"An error occurred: {e}\n{traceback_str}", type="log", tags=["error"])
         raise
     finally:
         tmpdir.cleanup()
-        log_callback("Process complete.")
+        log("Process complete.")

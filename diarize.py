@@ -72,32 +72,18 @@ class SimpleProgressHook:
             progress_percent = 100
         print(f'progress {step_name} {progress_percent}', flush=True)
         
+from model_manager import ensure_pyannote_models
+
 # Start Diarization:
 
-try:     
-    if platform.system() == 'Windows':
-        pipeline = Pipeline.from_pretrained(os.path.join(app_dir, 'pyannote', 'pyannote_config.yaml'))
-        pipeline.to(torch.device(device))
-    elif platform.system() in ("Darwin", "Linux"): # = MAC
-        if device == 'mps' and not torch.backends.mps.is_available():  # should only happen on x86_64, but checked on all archs to be sure
-            device = 'cpu'
-            print("log: 'pyannote_xpu: mps' was selected, but mps is not available on this system!")
-            print("log: This happens, because availability cannot be checked earlier.")
-            print("log: 'pyannote_xpu: cpu' was set.") # The string needs to be the same as in noScribe.py `if line.strip() == "log: 'pyannote_xpu: cpu' was set.":`.
-        with open(os.path.join(app_dir, 'pyannote', 'pyannote_config.yaml'), 'r') as yaml_file:
-            pyannote_config = yaml.safe_load(yaml_file)
+try:
+    # Ensure models are downloaded and cached before loading the pipeline
+    ensure_pyannote_models()
 
-        pyannote_config['pipeline']['params']['embedding'] = os.path.join(app_dir, *pyannote_config['pipeline']['params']['embedding'].split("/"))
-        pyannote_config['pipeline']['params']['segmentation'] = os.path.join(app_dir, *pyannote_config['pipeline']['params']['segmentation'].split("/"))
-
-        tmpdir = TemporaryDirectory('noScribe_diarize')
-        with open(os.path.join(tmpdir.name, 'pyannote_config_macOS.yaml'), 'w') as yaml_file:
-            yaml.safe_dump(pyannote_config, yaml_file)
-
-        pipeline = Pipeline.from_pretrained(os.path.join(tmpdir.name, 'pyannote_config_macOS.yaml'))
-        pipeline.to(torch.device(device))
-    else:
-        raise Exception('Platform not supported yet.')
+    print("Loading speaker diarization pipeline...")
+    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+    pipeline.to(torch.device(device))
+    print("Pipeline loaded.")
 
     with SimpleProgressHook(parent=None) as hook:
         if my_num_speakers is not None:

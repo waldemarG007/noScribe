@@ -923,22 +923,42 @@ class App(ctk.CTk):
             disfluencies = self.check_box_disfluencies.get()
             pause_option = self.option_menu_pause.get()
 
-            def log_callback(message, level='info'):
-                tags = []
-                if level == 'error':
-                    tags.append('error')
-                elif level == 'highlight':
-                    tags.append('highlight')
-                
-                # Ensure we are running in the main thread for UI updates
-                self.after(0, self.logn, message, tags)
+            def log_callback(log_message):
+                """
+                A thread-safe callback to update the GUI from the transcription worker.
+                It expects a dictionary with 'type' and 'data'.
+                """
+                log_type = log_message.get("type")
+                log_data = log_message.get("data")
 
+                if log_type == "progress":
+                    step = log_data.get("step")
+                    value = log_data.get("value")
+                    self.after(0, self.set_progress, step, value)
+                elif log_type == "log":
+                    tags = log_data.get("tags", [])
+                    link = log_data.get("link", "")
+                    self.after(0, self.logn, log_data.get("message", ""), tags, "both", link)
+                elif log_type == "logr": # Replace last line
+                    tags = log_data.get("tags", [])
+                    link = log_data.get("link", "")
+                    self.after(0, self.logr, log_data.get("message", ""), tags, "both", link)
+
+
+
+            # Get advanced whisper settings from config
+            whisper_beam_size = get_config('whisper_beam_size', 5)
+            whisper_temperature = get_config('whisper_temperature', 0.0)
+            whisper_compute_type = get_config('whisper_compute_type', 'default')
 
             run_transcription(
                 audio_file=self.audio_file,
                 transcript_file=self.transcript_file,
                 language_name=language_name,
                 whisper_model_name=sel_whisper_model,
+                whisper_beam_size=whisper_beam_size,
+                whisper_temperature=whisper_temperature,
+                whisper_compute_type=whisper_compute_type,
                 speaker_detection=speaker_detection,
                 start_time=start_time,
                 stop_time=stop_time,
